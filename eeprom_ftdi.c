@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <ftdi.h>
+#include <string.h>
 
 int read_decode_eeprom(struct ftdi_context *ftdi)
 {
@@ -29,7 +30,7 @@ int read_decode_eeprom(struct ftdi_context *ftdi)
     if (value <0)
     {
         fprintf(stderr, "No EEPROM found or EEPROM empty\n");
-        fprintf(stderr, "On empty EEPROM, use -w option to write default values\n");
+        fprintf(stderr, "On empty EEPROM, use -z option to write default values\n");
         return -1;
     }
     fprintf(stderr, "Chip type %d ftdi_eeprom_size: %d\n", ftdi->type, value);
@@ -80,16 +81,19 @@ int main(int argc, char **argv)
     int search_pid = 0x0;
     char *search_serial = NULL;
 
-    int new_pid = NULL;
+    int new_pid = -1;
     char *new_serial = NULL,
          *new_manufacturer = NULL,
-         *new_product = NULL;
+         *new_product = NULL,
+         *multi_param = NULL;
 
     int erase = 0;
     int do_write = 0;
     int use_defaults = 0;
     int retval = 0;
     int _debug = 0;
+    int _multi = 0;
+    int _multi_device = -1;
     int value;
 
     if ((ftdi = ftdi_new()) == 0)
@@ -98,7 +102,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    while ((i = getopt(argc, argv, "eV:P:S:p:s:m:d:zqh?")) != -1)
+    while ((i = getopt(argc, argv, "eV:P:S:p:s:m:d:z!:@:qh?")) != -1)
     {
         switch (i)
         {
@@ -134,13 +138,19 @@ int main(int argc, char **argv)
                 do_write  = 1;
                 use_defaults = 1;
                 break;
+            case '!': // TODO: help description
+                multi_param = optarg;
+                break;
+            case '@': // TODO: help description
+                _multi_device = strtoul(optarg, NULL, 0);
+                break;
             case 'q':
                 _debug = 1;
                 break;
             case 'h':
             case '?':
             default:
-                fprintf(stdout, "User must be root\n", *argv);
+                fprintf(stdout, "User must be root\n");
                 fprintf(stdout, "usage: %s [options]\n", *argv);
                 fprintf(stdout, "\t  -e \t\terase\n");
                 fprintf(stdout, "\t  -q \t\tshow parameters\n");
@@ -158,13 +168,25 @@ int main(int argc, char **argv)
                 fprintf(stdout, "\tFor write default EEPROM:\n");
                 fprintf(stdout, "\t  -z \t\tdefaul parameters\n");
                 fprintf(stdout, "Examples:\n");
-                fprintf(stdout, "find devices        : ./ftdi-eeprom-config -V 0x403 -P 0x6010\n");
                 fprintf(stdout, "find devices        : ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567\n");
                 fprintf(stdout, "search all FTDI dev : ./ftdi-eeprom-config -V 0x0 -P 0x0\n");
                 fprintf(stdout, "write new parameters: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567 -p 0x6030 -s New_1234\n");
                 fprintf(stdout, "\n");
                 retval = -1;
                 goto done;
+        }
+    }
+
+    if (NULL != multi_param) {
+        if (strcmp(multi_param, (char *)"multi") == 0) {
+            if (_multi_device < 0) {
+                fprintf (stdout, "multimode disable. For activate multimode need set [-@ {device}].\n");
+            }
+            else {
+                _multi = 1;
+                // TODO: more info output
+                fprintf (stdout, "[ATTENTION] multimode enable! This mode can be dammage wrong FTDI device!\n");
+            }
         }
     }
 
@@ -179,7 +201,7 @@ int main(int argc, char **argv)
             fprintf (stdout, "[NULL]new serial : %s\n", new_serial);
         else
             fprintf (stdout, "new serial : %s\n", new_serial);
-        if (new_pid == NULL)
+        if (new_pid < 0)
             fprintf (stdout, "[NULL]new pid : %x\n", new_pid);
         else
             fprintf (stdout, "new pid : %x\n", new_pid);
@@ -192,76 +214,96 @@ int main(int argc, char **argv)
     struct ftdi_device_list *devlist, *curdev;
     int res, duplicates=0, index=0, cnt=0;
 
-    if ((res = ftdi_usb_find_all(ftdi, &devlist, search_vid, search_pid)) < 0)
+    if ((res = ftdi_usb_find_all(ftdi, &devlist, search_vid, search_pid)) <= 0)
     {
         fprintf(stderr, "No FTDI with VID/PID:0x%x:0x%x found\n", search_vid, search_pid);
         retval = EXIT_FAILURE;
         goto do_deinit;
     }
+
+    //*
     else if (res > 1)
     {
-        if (search_serial == NULL){
-            fprintf(stderr, "[ERROR] Number devices with VID/PID %x:%x will be found: (%d)\n",
-                search_vid, search_pid, res);
+        if (0 == _multi)
+            fprintf(stderr, "[ERROR] ");
+
+        fprintf(stderr, "Number devices with VID/PID %x:%x will be found: (%d)\n", search_vid, search_pid, res);
+        if (search_serial == NULL)
             fprintf(stderr, "    Use flag -S for search with serial ID\n");
+
+        if (0 == _multi) {
             ftdi_list_free(&devlist);
             retval = EXIT_FAILURE;
             goto do_deinit;
         }
-        printf("Number of FTDI devices with VID/PID:0x%x:0x%x found: %d\n", search_vid, search_pid, res);
+
         for (curdev = devlist; curdev != NULL; curdev = curdev->next, cnt++)
         {
+            printf("%d) ", cnt);
             res = ftdi_usb_get_strings2(ftdi, curdev->dev, manufacturer, 128,description, 128, read_serial, 128);
-
-            if (-9 == res)
+            if (res == -9)
             {
-                fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                    ftdi_get_error_string(ftdi));
-                fprintf(stderr, "\t\"get serial number failed\"\n");
-            }
-            else if (-8 == res)
-            {
-                fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                    ftdi_get_error_string(ftdi));
-                fprintf(stderr, "\t\"get product description failed\"\n");
-            }
-            else if (-7 == res)
-            {
-                fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                    ftdi_get_error_string(ftdi));
-                fprintf(stderr, "\t\"get product manufacturer failed\"\n");
+                // fprintf(stderr, "[WARNING]: get serial number failed\n");
             }
             else if (res < 0)
             {
-                fprintf(stderr, "[FAIL] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                    ftdi_get_error_string(ftdi));
+                fprintf(stderr, "FAIL ftdi_usb_get_strings2 return : %d\n(%s)\n", res, ftdi_get_error_string(ftdi));
                 ftdi_list_free(&devlist);
                 retval = EXIT_FAILURE;
                 goto do_deinit;
             }
+            printf("Manufacturer: \"%s\"; Description: \"%s\";", manufacturer, description);
+            if (res != -9)
+                printf(" Serial: \"%s\"", read_serial);
+            else
+                printf(" Serial not found");
+            printf("\n");
 
-            printf("Manufacturer: %s; Description: %s; Serial %s\n",
-                manufacturer, description, read_serial
-            );
-
-            if ((search_serial != NULL) & (strcmp(read_serial, search_serial) == 0))
-            {
-                duplicates++;
-                index = cnt;
-            }
+            if (search_serial != NULL)
+                if (strcmp(read_serial, search_serial) == 0)
+                {
+                    duplicates++;
+                    index = cnt;
+                }
         }
-        if (duplicates > 1)
+        cnt--;
+        if (_debug)
+            printf("[DEBUG] Serial duplicates %d index %d cnt %d\n", duplicates, index, cnt);
+
+        if (0 == _multi)
         {
-            fprintf(stderr, "[ERROR] Number of device with VID/PID and Serial %x:%x'%s' found: (%d)\n",
-                search_vid, search_pid, search_serial, duplicates
-            );
-            fprintf(stderr, "    Please disconnect any FTDI devices.\n");
-            retval = EXIT_FAILURE;
-            goto do_deinit;
+            if (duplicates > 1)
+            {
+                fprintf(stderr, "[ERROR] Number of device with VID/PID and Serial %x:%x'%s' found: (%d)\n",
+                    search_vid, search_pid, search_serial, duplicates
+                );
+                fprintf(stderr, "    Please disconnect any FTDI devices.\n");
+                retval = EXIT_FAILURE;
+                goto do_deinit;
+            }
+            else
+            {
+                for (;index != 0; index--)
+                    devlist = devlist->next;
+
+                f = ftdi_usb_open_dev(ftdi, devlist[0].dev);
+                if (f<0)
+                {
+                    fprintf(stderr, "Unable to open device (%s)", ftdi_get_error_string(ftdi));
+                    goto done;
+                }
+            }
         }
         else
         {
-            f = ftdi_usb_open_dev(ftdi, devlist[index].dev);
+            if (_multi_device > cnt)
+            {
+                fprintf(stderr, "[ERROR] out of range selected device [@] %d:%d\n", _multi_device, cnt);
+                goto done;
+            }
+            for (;_multi_device != 0; _multi_device--)
+                devlist = devlist->next;
+            f = ftdi_usb_open_dev(ftdi, devlist[0].dev);
             if (f<0)
             {
                 fprintf(stderr, "Unable to open device (%s)", ftdi_get_error_string(ftdi));
@@ -269,39 +311,24 @@ int main(int argc, char **argv)
             }
         }
     }
-
+    //*/
 
     else if (res == 1)
     {
         res = ftdi_usb_get_strings2(ftdi, devlist[0].dev, NULL, 0, NULL, 0, read_serial, 128);
-        if (-9 == res)
+        if (res == -9)
         {
-            fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                ftdi_get_error_string(ftdi));
-            fprintf(stderr, "\t\"get serial number failed\"\n");
+            fprintf(stderr, "WARNING: get serial number failed\n");
         }
-        else if (-8 == res)
-        {
-            fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                ftdi_get_error_string(ftdi));
-            fprintf(stderr, "\t\"get product description failed\"\n");
-        }
-        else if (-7 == res)
-        {
-            fprintf(stderr, "[WARN] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                ftdi_get_error_string(ftdi));
-            fprintf(stderr, "\t\"get product manufacturer failed\"\n");
-        }
-
         else if (res < 0)
         {
-            fprintf(stderr, "[FAIL] ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
+            fprintf(stderr, "FAIL ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
                 ftdi_get_error_string(ftdi));
             ftdi_list_free(&devlist);
             retval = EXIT_FAILURE;
             goto do_deinit;
         }
-
+        // devlist = devlist->next;
         f = ftdi_usb_open_dev(ftdi,  devlist[0].dev);
         if (f<0)
         {
@@ -355,7 +382,7 @@ int main(int argc, char **argv)
         }
         f = ftdi_erase_eeprom(ftdi);
 
-        if (new_pid != NULL)
+        if (new_pid >= 0)
         {
             if (ftdi_set_eeprom_value(ftdi, PRODUCT_ID, new_pid) <0)
             {
