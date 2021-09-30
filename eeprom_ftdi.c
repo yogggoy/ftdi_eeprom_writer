@@ -29,13 +29,23 @@ struct eeprom_ftdi_param
     char *multi_param;
     int _multi_device;
     int _multi;
-
-    // int do_write; // = 0;
-    // int use_defaults; // = 0;
-    // int retval; // = 0;
-    // int _debug; // = 0;
-    // int value;
 };
+
+
+void get_ftdi_eeprom_type(struct eeprom_ftdi_param * param, int ftret)
+{
+    int value;
+    if (ftdi_get_eeprom_value(param->ftdi, CHIP_TYPE, & value) <0)
+    {
+        printf("ftdi_get_eeprom_value: %d (%s)\n", ftret, ftdi_get_error_string(param->ftdi));
+    }
+    if (value == -1)
+        printf("No EEPROM\n");
+    else if (value == 0)
+        printf("Internal EEPROM\n");
+    else
+        printf("Found 93x%02x\n", value);
+}
 
 int read_decode_eeprom(struct ftdi_context *ftdi)
 {
@@ -149,7 +159,15 @@ int find_ftdi_serial(struct eeprom_ftdi_param * param, struct ftdi_device_list *
 
 int multi_device_disabled(struct eeprom_ftdi_param * param, struct ftdi_device_list * devlist, int* duplicates, int* index)
 {
-    if (*duplicates > 1)
+    if (*duplicates <= 0)
+    {
+        printf("[ERROR] Device with VID/PID and Serial 0x%x:0x%x '%s' NOT found: (%d)\n",
+            param->search_vid, param->search_pid, param->search_serial, *duplicates
+        );
+        printf("    Please check you connection.\n");
+        return -1;
+    }
+    else if (*duplicates > 1)
     {
         printf("[ERROR] Number of device with VID/PID and Serial 0x%x:0x%x '%s' found: (%d)\n",
             param->search_vid, param->search_pid, param->search_serial, *duplicates
@@ -188,6 +206,28 @@ int multi_device_enabled(struct eeprom_ftdi_param * param, struct ftdi_device_li
     return 0;
 }
 
+int single_device_found(struct eeprom_ftdi_param * param, struct ftdi_device_list * devlist)
+{
+    int res;
+    res = ftdi_usb_get_strings2(param->ftdi, devlist->dev, NULL, 0, NULL, 0, param->read_serial, 128);
+    if (res == -9)
+        printf("WARNING: get serial number failed\n");
+    else if (res < 0)
+    {
+        printf("FAIL ftdi_usb_get_strings2 return : %d\n(%s)\n", res, ftdi_get_error_string(param->ftdi));
+        return -1;
+    }
+
+    if ( (ftdi_usb_open_dev(param->ftdi,  devlist->dev)) < 0 )
+    {
+        printf("Unable to open device (%s)", ftdi_get_error_string(param->ftdi));
+        return -2;
+    }
+    printf("Device is found\n");
+    return 0;
+}
+
+
 /*============================================================================\
 |                                     main.c                                  |
 \============================================================================*/
@@ -210,13 +250,11 @@ int main(int argc, char **argv)
     int erase = 0;
     int do_write = 0;
     int use_defaults = 0;
-    int retval = 0;
+    int print_eeprom =0;
     int _debug = 0;
-    int value;
-
 
     int args;
-    while ((args = getopt(argc, argv, "eV:P:S:p:s:m:d:z!:@:qh?")) != -1)
+    while ((args = getopt(argc, argv, "eV:P:S:p:s:m:d:z!:@:oqh?")) != -1)
     {
         switch (args)
         {
@@ -258,6 +296,9 @@ int main(int argc, char **argv)
             case '@':
                 _param._multi_device = strtoul(optarg, NULL, 0);
                 break;
+            case 'o':
+                print_eeprom = 1;
+                break;
             case 'q':
                 _debug = 1;
                 break;
@@ -282,11 +323,15 @@ int main(int argc, char **argv)
                 printf("\tFor write default EEPROM:\n");
                 printf("\t  -z \t\tdefaul parameters\n");
                 printf("\t  \n");
+                printf("\tPrint EEPROM to console:\n");
+                printf("\t  -o\n");
+                printf("\t  \n");
                 printf("\tWhen you have many FTDI devices and there is no way to leave\n");
                 printf("\tonly one connected, use this flags to work with multi-devices.\n");
                 printf("\tAttention! This is an exceptional case, it is preferable to\n");
                 printf("\tkeep only one device if possible. Otherwise, there is a chance\n");
                 printf("\tof making a mistake and ruining the device.\n");
+                printf("\tMulti-device access not sensitive to [-S] serial flag!\n");
                 printf("\t  -! multi \t\tactivate multi_device mode\n");
                 printf("\t  -@ <device>\t\tnumber of device\n");
                 printf("\t  \n");
@@ -295,8 +340,8 @@ int main(int argc, char **argv)
                 printf("find devices        : ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567\n");
                 printf("search all FTDI dev : ./ftdi-eeprom-config -V 0x0 -P 0x0\n");
                 printf("write new parameters: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567 -p 0x6030 -s New_1234\n");
-                printf("list multi-device mode: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567 -! multi -@ 0\n");
-                printf("program multi-device: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -S 1234567 -! multi -@ 0 -s New_1234\n");
+                printf("list multi-device mode: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -! multi -@ 0\n");
+                printf("program multi-device: ./ftdi-eeprom-config -V 0x403 -P 0x6010 -! multi -@ 0 -s New_1234\n");
                 printf("\n");
                 return 0;
         }
@@ -373,115 +418,75 @@ int main(int argc, char **argv)
             }
         }
     }
-
     else if (devs_found == 1)
     {
-        int res;
-        res = ftdi_usb_get_strings2(_param.ftdi, devlist->dev, NULL, 0, NULL, 0, _param.read_serial, 128);
-        if (res == -9)
+        if (single_device_found(& _param, devlist) < 0)
         {
-            printf("WARNING: get serial number failed\n");
-        }
-        else if (res < 0)
-        {
-            printf("FAIL ftdi_usb_get_strings2 return : %d\n(%s)\n", res,
-                ftdi_get_error_string(_param.ftdi));
             ftdi_list_free(&devlist);
-            retval = EXIT_FAILURE;
-            goto do_deinit;
-        }
-        // devlist = devlist->next;
-        if ( (ftdi_usb_open_dev(_param.ftdi,  devlist->dev)) < 0 )
-        {
-            printf("Unable to open device (%s)", ftdi_get_error_string(_param.ftdi));
-            goto done;
+            ftdi_free(_param.ftdi);
+            return EXIT_FAILURE;
         }
     }
     else
     {
         printf("No devices found\n");
         ftdi_list_free(&devlist);
-        goto do_deinit;
+        ftdi_free(_param.ftdi);
+        return 0;
     }
-    ftdi_list_free(&devlist);
-
 
     if (erase)
     {
-        ftret = ftdi_erase_eeprom(_param.ftdi); /* needed to determine EEPROM chip type */
-        if (ftret < 0)
+        /* needed to determine EEPROM chip type */
+        if ((ftret = ftdi_erase_eeprom(_param.ftdi)) < 0)
         {
             printf("Erase failed: %s", ftdi_get_error_string(_param.ftdi));
-            retval =  -2;
-            goto done;
+            ftdi_free(_param.ftdi);
+            return -2;
         }
-        if (ftdi_get_eeprom_value(_param.ftdi, CHIP_TYPE, & value) <0)
-        {
-            printf("ftdi_get_eeprom_value: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
-        }
-        if (value == -1)
-            printf("No EEPROM\n");
-        else if (value == 0)
-            printf("Internal EEPROM\n");
-        else
-            printf("Found 93x%02x\n", value);
-        retval = 0;
-        goto done;
+        get_ftdi_eeprom_type(& _param, ftret);
+        ftdi_free(_param.ftdi);
+        return 0;
     }
 
     if (do_write)
     {
         if (use_defaults)
-        {
             ftdi_eeprom_initdefaults(_param.ftdi, NULL, NULL, NULL);
-        }
         else
-        {
             ftdi_eeprom_initdefaults(_param.ftdi, _param.new_manufacturer, _param.new_product, _param.new_serial);
-        }
+
         ftret = ftdi_erase_eeprom(_param.ftdi);
 
         if (_param.new_pid >= 0)
         {
-            if (ftdi_set_eeprom_value(_param.ftdi, PRODUCT_ID, _param.new_pid) <0)
-            {
+            if (ftdi_set_eeprom_value(_param.ftdi, PRODUCT_ID, _param.new_pid) < 0)
                 printf("ftdi_set_eeprom_value PRODUCT_ID: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
-            }
         }
         if (ftdi_set_eeprom_value(_param.ftdi, MAX_POWER, 500) <0)
-        {
             printf("ftdi_set_eeprom_value MAX_POWER: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
-        }
-        ftret = ftdi_erase_eeprom(_param.ftdi);/* needed to determine EEPROM chip type */
-        if (ftdi_get_eeprom_value(_param.ftdi, CHIP_TYPE, & value) <0)
-        {
-            printf("ftdi_get_eeprom_value: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
-        }
-        if (value == -1)
-            printf("No EEPROM\n");
-        else if (value == 0)
-            printf("Internal EEPROM\n");
-        else
-            printf("Found 93x%02x\n", value);
-        ftret=(ftdi_eeprom_build(_param.ftdi));
-        if (ftret < 0)
+
+        /* needed to determine EEPROM chip type */
+        ftret = ftdi_erase_eeprom(_param.ftdi);
+        get_ftdi_eeprom_type(& _param, ftret);
+
+        if (ftdi_eeprom_build(_param.ftdi) < 0)
         {
             printf("Erase failed: %s", ftdi_get_error_string(_param.ftdi));
-            retval = -2;
-            goto done;
+            ftdi_free(_param.ftdi);
+            return 0;
         }
+
         ftret = ftdi_write_eeprom(_param.ftdi);
         {
             printf("ftdi_eeprom_decode: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
-            retval = 1;
-            goto done;
+            ftdi_free(_param.ftdi);
+            return 0;
         }
     }
-    retval = read_decode_eeprom(_param.ftdi);
 
-done:
-    ftdi_usb_close(_param.ftdi);
-do_deinit:
-    ftdi_free(_param.ftdi);
-    return retval;
+    if ( print_eeprom )
+        read_decode_eeprom(_param.ftdi);
+
+    return 0;
 }
