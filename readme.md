@@ -18,6 +18,7 @@ usage: ./ftdi-eeprom-config [options]
         If flags [p/s] not used, application only read EEPROM
         For set new parameters use:
           -p <pid>      new PID, for ft2232h : 0x6010
+          -v <vid>      new VID
           -s <serial>   write, with serial number
           -m <manufacturer>     write new manufacturer
           -d <device>   write new device description
