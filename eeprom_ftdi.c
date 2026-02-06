@@ -22,6 +22,7 @@ struct eeprom_ftdi_param
     char *search_serial;
 
     int new_pid;
+    int new_vid;
     char *new_serial;
     char *new_manufacturer;
     char *new_product;
@@ -110,6 +111,10 @@ void debug_output(struct eeprom_ftdi_param * param)
     if (param->new_pid < 0)
         printf("[NULL]");
     printf("new pid : 0x%x\n", param->new_pid);
+
+    if (param->new_vid < 0)
+        printf("[NULL]");
+    printf("new vid : 0x%x\n", param->new_vid);
 
     if (param->new_serial == NULL)
         printf("[NULL]");
@@ -240,6 +245,7 @@ int main(int argc, char **argv)
     _param.search_pid = 0x0;
     _param.search_serial = NULL;
     _param.new_pid = -1;
+    _param.new_vid = -1;
     _param.new_serial = NULL,
     _param.new_manufacturer = NULL,
     _param.new_product = NULL,
@@ -254,7 +260,7 @@ int main(int argc, char **argv)
     int _debug = 0;
 
     int args;
-    while ((args = getopt(argc, argv, "eV:P:S:p:s:m:d:z!:@:oqh?")) != -1)
+    while ((args = getopt(argc, argv, "eV:P:S:p:v:s:m:d:z!:@:oqh?")) != -1)
     {
         switch (args)
         {
@@ -273,6 +279,10 @@ int main(int argc, char **argv)
             case 'p':
                 do_write  = 1;
                 _param.new_pid = strtoul(optarg, NULL, 0);
+                break;
+            case 'v':
+                do_write  = 1;
+                _param.new_vid = strtoul(optarg, NULL, 0);
                 break;
             case 's':
                 do_write  = 1;
@@ -316,6 +326,7 @@ int main(int argc, char **argv)
                 printf("\tIf flags [p/s] not used, application only read EEPROM\n");
                 printf("\tFor set new parameters use:\n");
                 printf("\t  -p <pid>\tnew PID, for ft2232h : 0x6010\n");
+                printf("\t  -v <vid>\tnew VID\n");
                 printf("\t  -s <serial> \twrite, with serial number\n");
                 printf("\t  -m <manufacturer> \twrite new manufacturer\n");
                 printf("\t  -d <device> \twrite new device description\n");
@@ -462,6 +473,11 @@ int main(int argc, char **argv)
         {
             if (ftdi_set_eeprom_value(_param.ftdi, PRODUCT_ID, _param.new_pid) < 0)
                 printf("ftdi_set_eeprom_value PRODUCT_ID: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
+        }
+        if (_param.new_vid >= 0)
+        {
+            if (ftdi_set_eeprom_value(_param.ftdi, VENDOR_ID, _param.new_vid) < 0)
+                printf("ftdi_set_eeprom_value VENDOR_ID: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
         }
         if (ftdi_set_eeprom_value(_param.ftdi, MAX_POWER, 500) <0)
             printf("ftdi_set_eeprom_value MAX_POWER: %d (%s)\n", ftret, ftdi_get_error_string(_param.ftdi));
